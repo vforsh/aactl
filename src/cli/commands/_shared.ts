@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { loadModels } from "../../lib/api.ts";
-import { assertMetric, type MetricKey } from "../../lib/models.ts";
+import { METRIC_KEYS, assertMetric, type MetricKey } from "../../lib/models.ts";
 import { DEFAULT_COLUMNS, log } from "../../lib/output.ts";
 import { globalOpts, type GlobalOpts } from "../program.ts";
 
@@ -12,7 +12,7 @@ export async function loadForCommand(cmd: Command) {
 
 export function parseColumns(spec: string | undefined): MetricKey[] {
   if (!spec) return DEFAULT_COLUMNS;
-  if (spec === "all") return ["intelligence", "coding", "math", "speed", "ttft", "ttfa", "cost", "costIn", "costOut"];
+  if (spec === "all") return METRIC_KEYS;
   return spec.split(",").map((c) => {
     const k = c.trim();
     assertMetric(k);

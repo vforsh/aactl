@@ -40,7 +40,9 @@ export function registerShow(program: Command): void {
         `${m.creator}${m.releaseDate ? d(` · released ${m.releaseDate}`) : ""}`,
         "",
         h("Headline"),
-        ...METRIC_KEYS.map((k) => `  ${METRICS[k].label.padEnd(8)} ${cell(m, k).padStart(8)}`),
+        ...METRIC_KEYS.map((k) => `  ${METRICS[k].label.padEnd(10)} ${cell(m, k).padStart(8)}`),
+        `  ${"$/M cache w".padEnd(10)} ${(m.cacheWrite === null ? "—" : m.cacheWrite.toFixed(2)).padStart(8)}`,
+        `  ${"$ index".padEnd(10)} ${(m.costIndex === null ? "—" : m.costIndex.toFixed(0)).padStart(8)}`,
         "",
         h("Benchmarks"),
         ...Object.entries(m.evaluations)

@@ -20,7 +20,7 @@ export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-export const DEFAULT_COLUMNS: MetricKey[] = ["intelligence", "speed", "ttft", "cost"];
+export const DEFAULT_COLUMNS: MetricKey[] = ["intelligence", "speed", "ttft", "cost", "costTask", "value"];
 
 export function cell(m: Model, key: MetricKey): string {
   const v = m[key];

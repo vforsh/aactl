@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterModels, normalize, parseBounds, parseSort, resolveModels, slugsFromUrl, sortModels, type Model, type RawModel } from "../src/lib/models.ts";
+import { filterModels, mergeFeeds, normalize, parseBounds, parseSort, resolveModels, slugsFromUrl, sortModels, type FreeModel, type Model, type RawModel } from "../src/lib/models.ts";
 
 const raw = (over: Partial<RawModel> & { slug: string; name: string }): RawModel => ({
   id: over.slug,
@@ -25,6 +25,14 @@ describe("normalize", () => {
     expect(m.cost).toBeNull();
     expect(m.intelligence).toBe(50);
     expect(m.evaluations.gpqa).toBe(0.9);
+  });
+});
+
+describe("normalize zero guard", () => {
+  test("zero speed/latency becomes null", () => {
+    const m = normalize(raw({ slug: "z", name: "Z", median_output_tokens_per_second: 0, median_time_to_first_token_seconds: 0 }));
+    expect(m.speed).toBeNull();
+    expect(m.ttft).toBeNull();
   });
 });
 
@@ -85,5 +93,32 @@ describe("slugsFromUrl", () => {
     expect(slugsFromUrl("https://artificialanalysis.ai/models?models=a%2Cb%2Cc&cost=x#speed")).toEqual(["a", "b", "c"]);
     expect(() => slugsFromUrl("https://artificialanalysis.ai/models")).toThrow(/models=/);
     expect(() => slugsFromUrl("nope")).toThrow(/invalid URL/);
+  });
+});
+
+describe("mergeFeeds", () => {
+  const free: FreeModel[] = [
+    {
+      slug: "smart-slow",
+      evaluations: { artificial_analysis_agentic_index: 55 },
+      artificial_analysis_intelligence_index_cost: { total_cost: 2000, cost_per_task: { total_cost: 2 } },
+      pricing: { price_1m_cache_hit_tokens: 0.5, price_1m_cache_write_tokens: 6.25 },
+    },
+  ];
+  test("joins by slug and derives value = intelligence / costTask", () => {
+    const merged = mergeFeeds([raw({ slug: "smart-slow", name: "Smart Slow", evaluations: { artificial_analysis_intelligence_index: 80 } }), raw({ slug: "orphan", name: "Orphan" })], free);
+    const smart = merged.find((m) => m.slug === "smart-slow")!;
+    expect(smart.costTask).toBe(2);
+    expect(smart.value).toBe(40);
+    expect(smart.costIndex).toBe(2000);
+    expect(smart.cacheHit).toBe(0.5);
+    expect(smart.agentic).toBe(55);
+    const orphan = merged.find((m) => m.slug === "orphan")!;
+    expect(orphan.costTask).toBeNull();
+    expect(orphan.value).toBeNull();
+  });
+  test("value is null when costTask is zero or missing", () => {
+    const zero: FreeModel = { slug: "z", artificial_analysis_intelligence_index_cost: { total_cost: 0, cost_per_task: { total_cost: 0 } } };
+    expect(mergeFeeds([raw({ slug: "z", name: "Z" })], [zero])[0]?.value).toBeNull();
   });
 });

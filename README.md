@@ -25,6 +25,7 @@ aactl doctor
 ```bash
 aactl ls                                   # top 30 by intelligence index
 aactl ls -s cost --min intelligence=60     # cheapest models scoring 60+
+aactl ls -s value --min intelligence=55    # best intelligence per dollar actually spent
 aactl ls -s speed -c openai anthropic -n 10
 aactl ls --columns all --wide              # every headline metric, untruncated names
 aactl cmp claude-fable-5-1 gpt-5-6-sol grok-4-6 -s cost
@@ -48,12 +49,18 @@ Model arguments accept a slug, an exact name, or a substring. An ambiguous subst
 | `cost`         | blended $/M tokens, 3:1 input:output             |
 | `costIn`       | $/M input tokens                                 |
 | `costOut`      | $/M output tokens                                |
+| `costTask`     | $ per Intelligence Index task, from tokens the model actually burned (reasoning included) |
+| `value`        | `intelligence / costTask`: index points per dollar |
+| `agentic`      | Artificial Analysis Agentic Index                |
+| `cacheHit`     | $/M cached input tokens                          |
+
+`costTask` is the honest cost axis: a verbose reasoner with cheap tokens can cost more per task than a terse expensive one. `show` additionally prints cache-write pricing and the total dollars to run the full index suite.
 
 Sort specs: `cost` (better first), `cost:desc`, `-speed` (worse first).
 
 ### Cache
 
-Responses are cached at `~/.cache/aactl/models.json` for `cacheTtl` seconds (default 3600). `--refresh` refetches, `--offline` never hits the network. The free tier allows roughly 1000 requests per day.
+Data comes from two feeds merged by slug: `/data/llms/models` (full benchmark set) and the paginated `/language/models/free` (per-task cost, cache pricing, agentic index). One refresh is about five requests. Responses are cached at `~/.cache/aactl/models.json` for `cacheTtl` seconds (default 3600). `--refresh` refetches, `--offline` never hits the network. The free tier allows 100 requests per day on the language feed.
 
 ## Global flags
 

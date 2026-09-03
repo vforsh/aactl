@@ -30,6 +30,34 @@ export const ApiResponseSchema = z.object({
   data: z.array(RawModelSchema),
 });
 
+/** Record from /api/v2/language/models/free (paginated). */
+export const FreeModelSchema = z.object({
+  slug: z.string(),
+  evaluations: z.object({ artificial_analysis_agentic_index: num }).passthrough().nullable().optional(),
+  artificial_analysis_intelligence_index_cost: z
+    .object({
+      total_cost: num,
+      cost_per_task: z.object({ total_cost: num }).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  pricing: z
+    .object({
+      price_1m_cache_hit_tokens: num,
+      price_1m_cache_write_tokens: num,
+    })
+    .passthrough()
+    .nullable()
+    .optional(),
+});
+export type FreeModel = z.infer<typeof FreeModelSchema>;
+
+export const FreeResponseSchema = z.object({
+  tier: z.string().optional(),
+  pagination: z.object({ page: z.number(), total_pages: z.number(), has_more: z.boolean() }),
+  data: z.array(FreeModelSchema),
+});
+
 /** Flattened, CLI-friendly view of a model. */
 export interface Model {
   slug: string;
@@ -46,6 +74,12 @@ export interface Model {
   cost: number | null; // blended $/M tokens, 3:1
   costIn: number | null;
   costOut: number | null;
+  costTask: number | null; // $ per Intelligence Index task (actual tokens burned)
+  value: number | null; // intelligence / costTask
+  costIndex: number | null; // $ to run the whole Intelligence Index suite
+  cacheHit: number | null; // $/M cached input tokens
+  cacheWrite: number | null; // $/M cache write tokens
+  agentic: number | null;
   evaluations: Record<string, number | null>;
 }
 
@@ -59,6 +93,10 @@ export const METRICS = {
   cost: { label: "$/M", higherIsBetter: false, fmt: (v: number) => fmtPrice(v) },
   costIn: { label: "$/M in", higherIsBetter: false, fmt: (v: number) => fmtPrice(v) },
   costOut: { label: "$/M out", higherIsBetter: false, fmt: (v: number) => fmtPrice(v) },
+  costTask: { label: "$/task", higherIsBetter: false, fmt: (v: number) => fmtTask(v) },
+  value: { label: "Value", higherIsBetter: true, fmt: (v: number) => (v >= 100 ? v.toFixed(0) : v.toFixed(1)) },
+  agentic: { label: "Agentic", higherIsBetter: true, fmt: (v: number) => v.toFixed(1) },
+  cacheHit: { label: "$/M cache", higherIsBetter: false, fmt: (v: number) => fmtPrice(v) },
 } as const satisfies Record<string, { label: string; higherIsBetter: boolean; fmt: (v: number) => string }>;
 export type MetricKey = keyof typeof METRICS;
 export const METRIC_KEYS = Object.keys(METRICS) as MetricKey[];
@@ -67,27 +105,49 @@ export function fmtPrice(v: number): string {
   return v >= 10 ? v.toFixed(1) : v.toFixed(2);
 }
 
-export function normalize(raw: RawModel): Model {
+export function fmtTask(v: number): string {
+  return v >= 1 ? v.toFixed(2) : v.toFixed(3);
+}
+
+const n = (v: number | null | undefined): number | null => (typeof v === "number" ? v : null);
+/** Upstream sometimes reports 0 for unmeasured speed/latency; 0 is impossible there, so treat it as missing. */
+const pos = (v: number | null | undefined): number | null => (typeof v === "number" && v > 0 ? v : null);
+
+export function normalize(raw: RawModel, free?: FreeModel): Model {
   const ev = raw.evaluations ?? {};
   const p = raw.pricing ?? {};
-  const n = (v: number | null | undefined): number | null => (typeof v === "number" ? v : null);
+  const fp = free?.pricing ?? {};
+  const intelligence = n(ev.artificial_analysis_intelligence_index);
+  const costTask = n(free?.artificial_analysis_intelligence_index_cost?.cost_per_task?.total_cost);
   return {
     slug: raw.slug,
     name: raw.name,
     creator: raw.model_creator.name,
     creatorSlug: raw.model_creator.slug,
     releaseDate: raw.release_date ?? null,
-    intelligence: n(ev.artificial_analysis_intelligence_index),
+    intelligence,
     coding: n(ev.artificial_analysis_coding_index),
     math: n(ev.artificial_analysis_math_index),
-    speed: n(raw.median_output_tokens_per_second),
-    ttft: n(raw.median_time_to_first_token_seconds),
-    ttfa: n(raw.median_time_to_first_answer_token),
+    speed: pos(raw.median_output_tokens_per_second),
+    ttft: pos(raw.median_time_to_first_token_seconds),
+    ttfa: pos(raw.median_time_to_first_answer_token),
     cost: n(p.price_1m_blended_3_to_1),
     costIn: n(p.price_1m_input_tokens),
     costOut: n(p.price_1m_output_tokens),
+    costTask,
+    value: intelligence !== null && costTask !== null && costTask > 0 ? intelligence / costTask : null,
+    costIndex: n(free?.artificial_analysis_intelligence_index_cost?.total_cost),
+    cacheHit: n(fp.price_1m_cache_hit_tokens),
+    cacheWrite: n(fp.price_1m_cache_write_tokens),
+    agentic: n(free?.evaluations?.artificial_analysis_agentic_index),
     evaluations: Object.fromEntries(Object.entries(ev).map(([k, v]) => [k, n(v)])),
   };
+}
+
+/** Merge the legacy full-evaluation feed with the free-tier feed by slug. */
+export function mergeFeeds(legacy: RawModel[], free: FreeModel[]): Model[] {
+  const bySlug = new Map(free.map((f) => [f.slug, f]));
+  return legacy.map((raw) => normalize(raw, bySlug.get(raw.slug)));
 }
 
 export function assertMetric(key: string): asserts key is MetricKey {

@@ -17,7 +17,8 @@ aactl doctor
 ```
 
 ```bash
-aactl ls -s cost --min intelligence=60 -n 10       # cheapest models with index >= 60
+aactl ls -s cost --min intelligence=60 -n 10       # cheapest $/M with index >= 60
+aactl ls -s value --min intelligence=55 -n 10      # most index points per dollar actually spent
 aactl cmp claude-fable-5-1 gpt-5-6-sol grok-4-6 --json
 aactl show gemini-3-8-flash
 ```
@@ -35,7 +36,7 @@ Model arguments: slug (`claude-opus-5`), exact name, or substring. Ambiguous sub
 
 ## Metrics
 
-`intelligence`, `coding`, `math`, `speed` (tok/s), `ttft` (s), `ttfa` (s, includes reasoning), `cost` (blended 3:1 $/M), `costIn`, `costOut`. Sorting defaults to better-first per metric.
+`intelligence`, `coding`, `math`, `agentic`, `speed` (tok/s), `ttft` (s), `ttfa` (s, includes reasoning), `cost` (blended 3:1 $/M), `costIn`, `costOut`, `costTask` ($ per Intelligence Index task, real token usage incl. reasoning), `value` (intelligence / costTask), `cacheHit` ($/M cached input). Sorting defaults to better-first per metric. Prefer `costTask`/`value` over `cost` when comparing reasoning models: list prices ignore how many tokens a model burns.
 
 ## Global flags
 
@@ -51,5 +52,5 @@ Model arguments: slug (`claude-opus-5`), exact name, or substring. Ambiguous sub
 | 1 | no API key / generic | `printf key \| aactl cfg set apiKey -` |
 | 2 | bad flag, unknown metric, no model matched | check `--help`, use fuller slug |
 | 3 | HTTP 401/403 | regenerate key at artificialanalysis.ai/api |
-| 4 | HTTP 429 | wait; cached data still works with `--offline` |
+| 4 | HTTP 429 (100 req/day free tier) | wait; cached data still works with `--offline` |
 | 5 | network failure | retry, check `--endpoint` |
