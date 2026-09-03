@@ -1,0 +1,24 @@
+{
+  "name": "@vforsh/aactl",
+  "version": "0.1.0",
+  "description": "CLI for Artificial Analysis LLM data: compare models by intelligence, speed, and cost",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/vforsh/aactl.git" },
+  "bin": { "aactl": "bin/aactl" },
+  "files": ["bin", "src", "skill", "README.md"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "cmd": "bun run bin/aactl"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "picocolors": "^1.1.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
+}
