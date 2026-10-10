@@ -8,32 +8,26 @@ export const RawModelSchema = z.object({
   name: z.string(),
   slug: z.string(),
   release_date: z.string().nullable().optional(),
-  model_creator: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
+  model_creator: z.object({ id: z.string(), name: z.string() }).nullable(),
   evaluations: z.record(z.string(), num).default({}),
   pricing: z
     .object({
       price_1m_blended_3_to_1: num,
       price_1m_input_tokens: num,
       price_1m_output_tokens: num,
+      price_1m_cache_hit_tokens: num,
+      price_1m_cache_write_tokens: num,
     })
     .nullable()
     .optional(),
-  median_output_tokens_per_second: num,
-  median_time_to_first_token_seconds: num,
-  median_time_to_first_answer_token: num,
-});
-export type RawModel = z.infer<typeof RawModelSchema>;
-
-export const ApiResponseSchema = z.object({
-  status: z.number(),
-  prompt_options: z.unknown().optional(),
-  data: z.array(RawModelSchema),
-});
-
-/** Record from /api/v2/language/models/free (paginated). */
-export const FreeModelSchema = z.object({
-  slug: z.string(),
-  evaluations: z.object({ artificial_analysis_agentic_index: num }).passthrough().nullable().optional(),
+  performance: z
+    .object({
+      median_output_tokens_per_second: num,
+      median_time_to_first_token_seconds: num,
+      median_time_to_first_answer_token_seconds: num,
+    })
+    .nullable()
+    .optional(),
   artificial_analysis_intelligence_index_cost: z
     .object({
       total_cost: num,
@@ -41,22 +35,17 @@ export const FreeModelSchema = z.object({
     })
     .nullable()
     .optional(),
-  pricing: z
-    .object({
-      price_1m_cache_hit_tokens: num,
-      price_1m_cache_write_tokens: num,
-    })
-    .passthrough()
-    .nullable()
-    .optional(),
 });
-export type FreeModel = z.infer<typeof FreeModelSchema>;
+export type RawModel = z.infer<typeof RawModelSchema>;
 
-export const FreeResponseSchema = z.object({
-  tier: z.string().optional(),
-  pagination: z.object({ page: z.number(), total_pages: z.number(), has_more: z.boolean() }),
-  data: z.array(FreeModelSchema),
+/** Shared envelope for the supported Free, Pro, and Commercial language feeds. */
+export const ApiResponseSchema = z.object({
+  tier: z.enum(["free", "pro", "commercial"]),
+  intelligence_index_version: z.number(),
+  pagination: z.object({ page: z.number().int().positive(), total_pages: z.number().int().nonnegative(), has_more: z.boolean() }),
+  data: z.array(RawModelSchema),
 });
+export type ApiResponse = z.infer<typeof ApiResponseSchema>;
 
 /** Flattened, CLI-friendly view of a model. */
 export interface Model {
@@ -113,41 +102,43 @@ const n = (v: number | null | undefined): number | null => (typeof v === "number
 /** Upstream sometimes reports 0 for unmeasured speed/latency; 0 is impossible there, so treat it as missing. */
 const pos = (v: number | null | undefined): number | null => (typeof v === "number" && v > 0 ? v : null);
 
-export function normalize(raw: RawModel, free?: FreeModel): Model {
+export function normalize(raw: RawModel): Model {
   const ev = raw.evaluations ?? {};
   const p = raw.pricing ?? {};
-  const fp = free?.pricing ?? {};
+  const performance = raw.performance ?? {};
+  const creator = raw.model_creator?.name ?? "Unknown";
   const intelligence = n(ev.artificial_analysis_intelligence_index);
-  const costTask = n(free?.artificial_analysis_intelligence_index_cost?.cost_per_task?.total_cost);
+  const costTask = n(raw.artificial_analysis_intelligence_index_cost?.cost_per_task?.total_cost);
+  const costIn = n(p.price_1m_input_tokens);
+  const costOut = n(p.price_1m_output_tokens);
+  // The Free API omits blended pricing; retain the CLI's 3:1 metric locally.
+  let cost = n(p.price_1m_blended_3_to_1);
+  if (p.price_1m_blended_3_to_1 === undefined && costIn !== null && costOut !== null) {
+    cost = (3 * costIn + costOut) / 4;
+  }
   return {
     slug: raw.slug,
     name: raw.name,
-    creator: raw.model_creator.name,
-    creatorSlug: raw.model_creator.slug,
+    creator,
+    creatorSlug: creator.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
     releaseDate: raw.release_date ?? null,
     intelligence,
     coding: n(ev.artificial_analysis_coding_index),
     math: n(ev.artificial_analysis_math_index),
-    speed: pos(raw.median_output_tokens_per_second),
-    ttft: pos(raw.median_time_to_first_token_seconds),
-    ttfa: pos(raw.median_time_to_first_answer_token),
-    cost: n(p.price_1m_blended_3_to_1),
-    costIn: n(p.price_1m_input_tokens),
-    costOut: n(p.price_1m_output_tokens),
+    speed: pos(performance.median_output_tokens_per_second),
+    ttft: pos(performance.median_time_to_first_token_seconds),
+    ttfa: pos(performance.median_time_to_first_answer_token_seconds),
+    cost,
+    costIn,
+    costOut,
     costTask,
     value: intelligence !== null && costTask !== null && costTask > 0 ? intelligence / costTask : null,
-    costIndex: n(free?.artificial_analysis_intelligence_index_cost?.total_cost),
-    cacheHit: n(fp.price_1m_cache_hit_tokens),
-    cacheWrite: n(fp.price_1m_cache_write_tokens),
-    agentic: n(free?.evaluations?.artificial_analysis_agentic_index),
+    costIndex: n(raw.artificial_analysis_intelligence_index_cost?.total_cost),
+    cacheHit: n(p.price_1m_cache_hit_tokens),
+    cacheWrite: n(p.price_1m_cache_write_tokens),
+    agentic: n(ev.artificial_analysis_agentic_index),
     evaluations: Object.fromEntries(Object.entries(ev).map(([k, v]) => [k, n(v)])),
   };
-}
-
-/** Merge the legacy full-evaluation feed with the free-tier feed by slug. */
-export function mergeFeeds(legacy: RawModel[], free: FreeModel[]): Model[] {
-  const bySlug = new Map(free.map((f) => [f.slug, f]));
-  return legacy.map((raw) => normalize(raw, bySlug.get(raw.slug)));
 }
 
 export function assertMetric(key: string): asserts key is MetricKey {

@@ -8,9 +8,9 @@ import { loadForCommand, useColor } from "./_shared.ts";
 export function registerShow(program: Command): void {
   program
     .command("show <model>")
-    .description("full details for one model, including every benchmark score")
+    .description("details for one model, including available evaluation scores")
     .action(async (query: string, _opts, cmd: Command) => {
-      const { g, models } = await loadForCommand(cmd);
+      const { g, models, tier } = await loadForCommand(cmd);
       const { found, missing } = resolveModels(models, [query]);
       const m = found[0];
       if (!m) throw new UsageError(`not found: ${missing[0] ?? query}`);
@@ -35,6 +35,14 @@ export function registerShow(program: Command): void {
       const color = useColor(g);
       const h = (s: string) => (color ? pc.bold(s) : s);
       const d = (s: string) => (color ? pc.dim(s) : s);
+      const benchmarks = Object.entries(m.evaluations).filter(([k]) => !k.startsWith("artificial_analysis_"));
+      const benchmarkLines = benchmarks.map(([k, v]) => `  ${k.padEnd(24)} ${v === null ? d("—") : fmtEval(v).padStart(7)}`);
+      if (benchmarks.length === 0) {
+        const message = tier === "free"
+          ? "  Individual benchmark scores require a Pro API subscription."
+          : "  No individual benchmark scores available.";
+        benchmarkLines.push(d(message));
+      }
       const out: string[] = [
         `${h(m.name)} ${d(`(${m.slug})`)}`,
         `${m.creator}${m.releaseDate ? d(` · released ${m.releaseDate}`) : ""}`,
@@ -45,9 +53,7 @@ export function registerShow(program: Command): void {
         `  ${"$ index".padEnd(10)} ${(m.costIndex === null ? "—" : m.costIndex.toFixed(0)).padStart(8)}`,
         "",
         h("Benchmarks"),
-        ...Object.entries(m.evaluations)
-          .filter(([k]) => !k.startsWith("artificial_analysis_"))
-          .map(([k, v]) => `  ${k.padEnd(24)} ${v === null ? d("—") : fmtEval(v).padStart(7)}`),
+        ...benchmarkLines,
       ];
       process.stdout.write(`${out.join("\n")}\n`);
     });

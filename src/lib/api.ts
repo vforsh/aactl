@@ -1,10 +1,17 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { z } from "zod";
 import { cachePath, resolveConfig } from "./config.ts";
 import { CliError } from "./errors.ts";
-import { ApiResponseSchema, FreeResponseSchema, mergeFeeds, type FreeModel, type Model } from "./models.ts";
+import { ApiResponseSchema, normalize, type ApiResponse, type Model } from "./models.ts";
 
-const CACHE_VERSION = 2;
+const CacheSchema = ApiResponseSchema.omit({ pagination: true }).extend({
+  version: z.literal(3),
+  fetchedAt: z.iso.datetime(),
+  endpoint: z.string(),
+});
+type CacheFile = z.infer<typeof CacheSchema>;
+type Config = Awaited<ReturnType<typeof resolveConfig>>;
 
 export interface FetchOptions {
   refresh?: boolean;
@@ -16,30 +23,30 @@ export interface Loaded {
   models: Model[];
   source: "cache" | "network";
   fetchedAt: string;
+  tier: ApiResponse["tier"];
+  intelligenceIndexVersion: number;
 }
 
-interface CacheFile {
-  version: number;
-  fetchedAt: string;
-  legacy: unknown;
-  free: unknown[];
+export function languageModelsUrl(endpoint: string, free = true): string {
+  return `${endpoint.replace(/\/$/, "")}/language/models${free ? "/free" : ""}`;
 }
 
 export async function loadModels(opts: FetchOptions = {}): Promise<Loaded> {
   const cfg = await resolveConfig();
   const log = opts.log ?? (() => {});
   const path = cachePath();
+  const endpoint = cfg.endpoint.replace(/\/$/, "");
 
-  if (!opts.refresh) {
-    const cached = await readCache(path);
+  if (!opts.refresh || opts.offline) {
+    const cached = await readCache(path, endpoint);
     if (cached) {
       const ageSec = (Date.now() - Date.parse(cached.fetchedAt)) / 1000;
       if (opts.offline || ageSec < cfg.cacheTtl) {
         log(`using cache (${Math.round(ageSec)}s old): ${path}`);
-        return { models: parse(cached.legacy, cached.free), source: "cache", fetchedAt: cached.fetchedAt };
+        return loaded(cached, "cache");
       }
     } else if (opts.offline) {
-      throw new CliError(`--offline requested but no cache at ${path}`);
+      throw new CliError(`--offline requested but no compatible cache for ${endpoint} at ${path}. Run aactl ls --refresh first`);
     }
   }
 
@@ -47,51 +54,62 @@ export async function loadModels(opts: FetchOptions = {}): Promise<Loaded> {
     throw new CliError(`no API key. Set AA_API_KEY or run: printf "<key>" | aactl cfg set apiKey -\nGet a free key at https://artificialanalysis.ai/api`);
   }
 
-  const base = cfg.endpoint.replace(/\/$/, "");
-  const legacyUrl = `${base}/data/llms/models`;
-  const freeUrl = `${base}/language/models/free`;
-  const legacy = await fetchJson(legacyUrl, cfg.apiKey, cfg.timeout, cfg.retries, log);
-  const free = await fetchFreePages(freeUrl, cfg.apiKey, cfg.timeout, cfg.retries, log);
-  const fetchedAt = new Date().toISOString();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify({ version: CACHE_VERSION, fetchedAt, legacy, free } satisfies CacheFile));
-  log(`fetched ${legacyUrl} + ${freeUrl}, cached to ${path}`);
-  return { models: parse(legacy, free), source: "network", fetchedAt };
-}
-
-/** The free feed is paginated (200/page); follow has_more. */
-async function fetchFreePages(url: string, apiKey: string, timeout: number, retries: number, log: (m: string) => void): Promise<unknown[]> {
-  const all: unknown[] = [];
-  for (let page = 1; page <= 50; page++) {
-    const body = await fetchJson(`${url}?page=${page}`, apiKey, timeout, retries, log);
-    const res = FreeResponseSchema.safeParse(body);
-    if (!res.success) throw new CliError(`unexpected free-tier payload on page ${page}: ${res.error.issues[0]?.message ?? "schema mismatch"}`);
-    all.push(...res.data.data);
-    if (!res.data.pagination.has_more) break;
+  // The Free response reports the key's actual tier, including paid keys.
+  const freeUrl = languageModelsUrl(endpoint);
+  const probe = await fetchPage(freeUrl, 1, cfg, log);
+  let url = freeUrl;
+  let page = probe;
+  if (probe.tier !== "free") {
+    url = languageModelsUrl(endpoint, false);
+    page = await fetchPage(url, 1, cfg, log);
   }
-  return all;
+  const { tier, intelligence_index_version } = page;
+  const data = [...page.data];
+  while (page.pagination.has_more) {
+    const next = page.pagination.page + 1;
+    if (next > 50) throw new CliError("API pagination exceeded 50 pages; refusing to cache an incomplete feed");
+    page = await fetchPage(url, next, cfg, log);
+    if (page.tier !== tier || page.intelligence_index_version !== intelligence_index_version) {
+      throw new CliError("API tier or Intelligence Index version changed during pagination; retry with --refresh");
+    }
+    data.push(...page.data);
+  }
+  const fetchedAt = new Date().toISOString();
+  const cached: CacheFile = { version: 3, endpoint, fetchedAt, tier, intelligence_index_version, data };
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(cached));
+  log(`fetched ${data.length} models from ${url} (${tier}, index v${intelligence_index_version}), cached to ${path}`);
+  return loaded(cached, "network");
 }
 
-async function readCache(path: string): Promise<CacheFile | null> {
+async function fetchPage(url: string, page: number, cfg: Config, log: (m: string) => void): Promise<ApiResponse> {
+  const body = await fetchJson(`${url}?page=${page}`, cfg.apiKey!, cfg.timeout, cfg.retries, log);
+  const res = ApiResponseSchema.safeParse(body);
+  if (!res.success) {
+    const issue = res.error.issues[0];
+    throw new CliError(`unexpected API payload on page ${page} at ${issue?.path.join(".")}: ${issue?.message ?? "schema mismatch"}`);
+  }
+  if (res.data.pagination.page !== page) throw new CliError(`API returned page ${res.data.pagination.page} when page ${page} was requested`);
+  return res.data;
+}
+
+async function readCache(path: string, endpoint: string): Promise<CacheFile | null> {
   try {
-    await stat(path);
-    const c = JSON.parse(await readFile(path, "utf8")) as CacheFile;
-    if (c.version !== CACHE_VERSION || typeof c.fetchedAt !== "string" || !("legacy" in c) || !Array.isArray(c.free)) return null;
-    return c;
+    const res = CacheSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+    return res.success && res.data.endpoint === endpoint ? res.data : null;
   } catch {
     return null;
   }
 }
 
-function parse(legacy: unknown, free: unknown[]): Model[] {
-  const res = ApiResponseSchema.safeParse(legacy);
-  if (!res.success) throw new CliError(`unexpected API payload: ${res.error.issues[0]?.message ?? "schema mismatch"}`);
-  const freeModels: FreeModel[] = [];
-  for (const f of free) {
-    const r = FreeResponseSchema.shape.data.element.safeParse(f);
-    if (r.success) freeModels.push(r.data);
-  }
-  return mergeFeeds(res.data.data, freeModels);
+function loaded(cached: CacheFile, source: Loaded["source"]): Loaded {
+  return {
+    models: cached.data.map(normalize),
+    source,
+    fetchedAt: cached.fetchedAt,
+    tier: cached.tier,
+    intelligenceIndexVersion: cached.intelligence_index_version,
+  };
 }
 
 async function fetchJson(url: string, apiKey: string, timeout: number, retries: number, log: (m: string) => void): Promise<unknown> {
@@ -101,8 +119,13 @@ async function fetchJson(url: string, apiKey: string, timeout: number, retries: 
     const t = setTimeout(() => ctl.abort(), timeout);
     try {
       const res = await fetch(url, { headers: { "x-api-key": apiKey, accept: "application/json" }, signal: ctl.signal });
-      if (res.status === 401 || res.status === 403) throw new CliError(`API rejected key (HTTP ${res.status}). Check AA_API_KEY / aactl cfg get apiKey`, 3);
-      if (res.status === 429) throw new CliError(`rate limited (HTTP 429). Free tier allows 100 requests/day on the language feed; use --offline or wait`, 4);
+      if (res.status === 401) throw new CliError(`API rejected key (HTTP 401). Check AA_API_KEY / aactl cfg get apiKey`, 3);
+      if (res.status === 403) throw new CliError(`API access denied (HTTP 403) for ${url}. Check the key's organization and API subscription at https://artificialanalysis.ai/api`, 3);
+      if (res.status === 429) {
+        const retryAfter = res.headers.get("Retry-After");
+        const retryHint = retryAfter === null ? "the quota resets" : `${retryAfter} seconds`;
+        throw new CliError(`rate limited (HTTP 429). Use --offline or retry after ${retryHint}`, 4);
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
       return await res.json();
     } catch (err) {

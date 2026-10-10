@@ -2,6 +2,7 @@ import { access, constants, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Command } from "commander";
 import pc from "picocolors";
+import { languageModelsUrl } from "../../lib/api.ts";
 import { cachePath, configPath, readConfigFile, resolveConfig } from "../../lib/config.ts";
 import { printJson } from "../../lib/output.ts";
 import { globalOpts } from "../program.ts";
@@ -43,18 +44,20 @@ export function registerDoctor(program: Command): void {
       }
 
       if (cfg && opts.network !== false) {
-        const url = `${cfg.endpoint.replace(/\/$/, "")}/data/llms/models`;
+        const url = languageModelsUrl(cfg.endpoint);
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), Math.min(cfg.timeout, 10_000));
         try {
-          const ctl = new AbortController();
-          const t = setTimeout(() => ctl.abort(), Math.min(cfg.timeout, 10_000));
           const res = await fetch(url, { headers: cfg.apiKey ? { "x-api-key": cfg.apiKey } : {}, signal: ctl.signal });
-          clearTimeout(t);
           if (res.ok) checks.push({ name: "api", status: "OK", detail: `HTTP ${res.status} ${url}` });
-          else if (res.status === 401 || res.status === 403) checks.push({ name: "api", status: "FAIL", detail: `HTTP ${res.status}: key rejected`, hint: "regenerate key at https://artificialanalysis.ai/api" });
+          else if (res.status === 401) checks.push({ name: "api", status: "FAIL", detail: "HTTP 401: key rejected", hint: "check key at https://artificialanalysis.ai/api" });
+          else if (res.status === 403) checks.push({ name: "api", status: "FAIL", detail: "HTTP 403: access denied", hint: "check the key's organization and API subscription" });
           else if (res.status === 429) checks.push({ name: "api", status: "WARN", detail: "HTTP 429 rate limited", hint: "cache still works; retry later" });
           else checks.push({ name: "api", status: "FAIL", detail: `HTTP ${res.status}` });
         } catch (err) {
           checks.push({ name: "api", status: "FAIL", detail: `unreachable: ${(err as Error).message}` });
+        } finally {
+          clearTimeout(t);
         }
       }
 

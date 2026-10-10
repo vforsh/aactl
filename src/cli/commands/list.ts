@@ -17,9 +17,9 @@ export function registerList(program: Command): void {
     .option("--columns <keys>", "comma-separated metrics or 'all' (default: intelligence,speed,ttft,cost,costTask,value)")
     .option("--all", "include models missing intelligence/speed/cost data")
     .option("--wide", "do not truncate long model names")
-    .option("--full", "with --json: include every raw evaluation score")
+    .option("--full", "with --json: include all available evaluation scores (individual benchmarks require Pro)")
     .action(async (opts, cmd: Command) => {
-      const { g, models, source, fetchedAt } = await loadForCommand(cmd);
+      const { g, models, source, fetchedAt, tier, intelligenceIndexVersion } = await loadForCommand(cmd);
       const sort = parseSort(opts.sort);
       const columns = parseColumns(opts.columns);
       const filtered = filterModels(models, {
@@ -32,7 +32,7 @@ export function registerList(program: Command): void {
       const rows = sortModels(filtered, sort).slice(0, opts.limit > 0 ? opts.limit : undefined);
 
       if (g.json) {
-        printJson({ source, fetchedAt, total: filtered.length, shown: rows.length, sort, models: rows.map((m) => toJsonRow(m, Boolean(opts.full))) });
+        printJson({ source, fetchedAt, tier, intelligenceIndexVersion, total: filtered.length, shown: rows.length, sort, models: rows.map((m) => toJsonRow(m, Boolean(opts.full))) });
       } else if (g.plain) {
         process.stdout.write(`${renderPlain(rows, columns)}\n`);
       } else {
